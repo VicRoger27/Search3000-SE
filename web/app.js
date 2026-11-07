@@ -1,14 +1,16 @@
 // Search3000 Web Client Application
 
 let currentQuery = "";
-let currentResults = [];
-let aiEventSource = null;
+let currentRawResults = [];
+let activeTab = "all";
+let spiderPollInterval = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   setupEventListeners();
   loadIndexStats();
+  startStatusPolling();
 
-  // Handle URL query parameters (e.g. ?q=quantum)
+  // Handle URL query parameters (e.g. ?q=yolo+vs+sam)
   const urlParams = new URLSearchParams(window.location.search);
   const q = urlParams.get("q");
   if (q) {
@@ -25,9 +27,9 @@ function setupEventListeners() {
   const topSearchBtn = document.getElementById("search-btn-top");
   const luckyBtn = document.getElementById("lucky-btn");
   const clearBtn = document.getElementById("clear-btn");
-  const crawlBtn = document.getElementById("crawl-url-btn");
   const regenAiBtn = document.getElementById("regenerate-ai-btn");
 
+  // Search Inputs
   homeInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") triggerSearch(homeInput.value);
   });
@@ -38,7 +40,7 @@ function setupEventListeners() {
 
   homeSearchBtn.addEventListener("click", () => triggerSearch(homeInput.value));
   topSearchBtn.addEventListener("click", () => triggerSearch(topInput.value));
-  luckyBtn.addEventListener("click", () => triggerSearch(homeInput.value || "Spark-X 2.6 LLM"));
+  luckyBtn.addEventListener("click", () => triggerSearch(homeInput.value || "YOLO vs SAM"));
 
   clearBtn.addEventListener("click", () => {
     topInput.value = "";
@@ -54,15 +56,49 @@ function setupEventListeners() {
     }
   });
 
-  crawlBtn.addEventListener("click", handleCrawlUrl);
-  regenAiBtn.addEventListener("click", () => startAiOverview(currentQuery, currentResults));
+  regenAiBtn.addEventListener("click", () => startAiOverview(currentQuery, currentRawResults));
+
+  // Search Filter Tabs
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeTab = btn.getAttribute("data-tab");
+      applyTabFilter();
+    });
+  });
+
+  // Settings & Spider Modal
+  const openModalBtn = document.getElementById("open-indexer-modal");
+  const diskBadgeBtn = document.getElementById("disk-badge-btn");
+  const closeModalBtn = document.getElementById("close-modal-btn");
+  const modal = document.getElementById("settings-modal");
+
+  openModalBtn.addEventListener("click", openSettingsModal);
+  diskBadgeBtn.addEventListener("click", openSettingsModal);
+  closeModalBtn.addEventListener("click", closeSettingsModal);
+
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) closeSettingsModal();
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modal.classList.contains("hidden")) {
+      closeSettingsModal();
+    }
+  });
+
+  // Spider Control Buttons
+  document.getElementById("toggle-spider-btn").addEventListener("click", toggleSpider);
+  document.getElementById("modal-toggle-spider-btn").addEventListener("click", toggleSpider);
+  document.getElementById("step-spider-btn").addEventListener("click", stepSpider);
+  document.getElementById("modal-step-spider-btn").addEventListener("click", stepSpider);
 }
 
 function triggerSearch(query, skipAi = false) {
   const cleanQ = query.trim();
   if (!cleanQ) return;
-  
-  // Update URL history
+
   const newUrl = `${window.location.pathname}?q=${encodeURIComponent(cleanQ)}`;
   window.history.pushState({ q: cleanQ }, "", newUrl);
 
@@ -89,7 +125,7 @@ async function executeSearch(query, skipAi = false) {
   const reformBar = document.getElementById("reformulation-bar");
   reformBar.classList.add("hidden");
 
-  metricsEl.innerText = "Searching local Base128 index and analyzing intent with Spark-X...";
+  metricsEl.innerText = "Searching local Base128 index and analyzing intent with Spark-X 2.6...";
   resultsList.innerHTML = `
     <div class="shimmer-line"></div>
     <div class="shimmer-line short"></div>
@@ -101,10 +137,10 @@ async function executeSearch(query, skipAi = false) {
     const res = await fetch(url);
     const data = await res.json();
 
-    currentResults = data.results || [];
+    currentRawResults = data.results || [];
     metricsEl.innerText = `About ${data.total_results} results (${(data.time_ms / 1000).toFixed(2)} seconds)`;
 
-    // Handle Spark-X Query Reformulation
+    // Handle Spark-X Query Reformulation ("What you meant to say")
     if (data.did_you_mean && !skipAi) {
       reformBar.classList.remove("hidden");
       const correctedLink = document.getElementById("corrected-query-link");
@@ -120,14 +156,14 @@ async function executeSearch(query, skipAi = false) {
       reasonEl.innerText = data.reason ? `(${data.reason})` : "";
     }
 
-    renderResults(currentResults);
-    updateStatsDisplay(data.stats);
+    applyTabFilter();
+    updateStatsDisplay(data.stats, data.spider);
 
-    // Trigger Streaming AI Overview
-    startAiOverview(data.effective_query || query, currentResults);
+    // Trigger AI Overview stream
+    startAiOverview(data.effective_query || query, currentRawResults);
 
   } catch (err) {
-    metricsEl.innerText = "Error executing search. Please verify the backend is running.";
+    metricsEl.innerText = "Error executing search. Verify backend is running.";
     resultsList.innerHTML = `<p style="color:red;">Error: ${err.message}</p>`;
   }
 }
@@ -140,25 +176,48 @@ function switchToResultsView() {
   window.scrollTo(0, 0);
 }
 
+function applyTabFilter() {
+  const aiCard = document.getElementById("ai-overview-card");
+  const resultsList = document.getElementById("results-list");
+
+  if (activeTab === "ai") {
+    // AI Overview Mode
+    aiCard.classList.remove("hidden");
+    resultsList.classList.add("hidden");
+  } else if (activeTab === "live_crawled") {
+    // Autonomous Spider Crawled only
+    aiCard.classList.remove("hidden");
+    resultsList.classList.remove("hidden");
+    const spiderResults = currentRawResults.filter(
+      (r) => r.source === "autonomous_spider" || r.source === "frontier_spider"
+    );
+    renderResults(spiderResults);
+  } else {
+    // "All" Tab
+    aiCard.classList.remove("hidden");
+    resultsList.classList.remove("hidden");
+    renderResults(currentRawResults);
+  }
+}
+
 function renderResults(results) {
   const container = document.getElementById("results-list");
   if (!results || results.length === 0) {
     container.innerHTML = `
-      <div style="padding: 30px 0;">
-        <h3>No results found in Base128 index.</h3>
-        <p style="color: var(--text-secondary); margin-top: 8px;">
-          Try searching for different keywords or use the right-hand panel to index specific websites.
+      <div style="padding: 24px 0;">
+        <h3 style="font-size: 16px; margin-bottom: 8px;">No matching results in Base128 index yet.</h3>
+        <p style="color: var(--text-secondary); font-size: 14px; line-height: 1.5;">
+          The autonomous hyperlink spider is continuously exploring links in the background to discover and index pages across the web graph.
         </p>
       </div>
     `;
     return;
   }
 
-  container.innerHTML = results.map((item, idx) => {
+  container.innerHTML = results.map((item) => {
     let domain = "web";
     try {
-      const parsed = new URL(item.url);
-      domain = parsed.hostname;
+      domain = new URL(item.url).hostname;
     } catch {}
 
     const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
@@ -177,8 +236,9 @@ function renderResults(results) {
         </a>
         <div class="result-snippet">${item.snippet || "No preview snippet available."}</div>
         <div class="result-meta">
-          <span class="base128-tag">⚡ Base128 Cached</span>
+          <span class="base128-tag">⚡ Base128 Indexed</span>
           ${item.score ? `<span class="base128-tag">BM25: ${item.score}</span>` : ""}
+          <span class="base128-tag">Source: ${escapeHtml(item.source || 'spider')}</span>
         </div>
       </article>
     `;
@@ -189,7 +249,6 @@ function startAiOverview(query, sources) {
   const aiContent = document.getElementById("ai-overview-content");
   const sourcesBar = document.getElementById("ai-overview-sources");
 
-  // Render Source Pills
   if (sources && sources.length > 0) {
     sourcesBar.innerHTML = sources.slice(0, 5).map((s, idx) => {
       let domain = "source";
@@ -212,18 +271,11 @@ function startAiOverview(query, sources) {
     </div>
   `;
 
-  // Close prior event source if active
-  if (aiEventSource) {
-    aiEventSource.close();
-    aiEventSource = null;
-  }
-
   let accumulatedText = "";
   const sseUrl = `/api/ai/stream?q=${encodeURIComponent(query)}`;
 
-  // Use fetch with ReadableStream for smooth token delivery
   fetch(sseUrl)
-    .then(response => {
+    .then((response) => {
       const reader = response.body.getReader();
       const decoder = new TextDecoder("utf-8");
       aiContent.innerHTML = "";
@@ -242,79 +294,116 @@ function startAiOverview(query, sources) {
             }
           }
           read();
-        }).catch(err => {
-          aiContent.innerHTML = `<p style="color:var(--text-secondary)">AI Overview stream ended.</p>`;
+        }).catch(() => {
+          if (!accumulatedText) {
+            aiContent.innerHTML = `<p style="color:var(--text-secondary)">AI Overview generated based on Base128 disk store.</p>`;
+          }
         });
       }
       read();
     })
-    .catch(err => {
-      aiContent.innerHTML = `<p style="color:var(--text-secondary)">AI Overview unavailable.</p>`;
+    .catch(() => {
+      aiContent.innerHTML = `<p style="color:var(--text-secondary)">AI Overview ready when model is active.</p>`;
     });
 }
 
 function formatMarkdown(text) {
   let html = escapeHtml(text);
-  // Bold **text**
   html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-  // Citations [1], [2] to styled pills
   html = html.replace(/\[([0-9]+)\]/g, '<span class="citation-tag">[$1]</span>');
-  // Newlines to paragraphs/breaks
   html = html.replace(/\n\n/g, "</p><p>");
   html = html.replace(/\n/g, "<br>");
   return `<p>${html}</p>`;
 }
 
-async function handleCrawlUrl() {
-  const input = document.getElementById("crawl-url-input");
-  const statusEl = document.getElementById("crawl-status");
-  const url = input.value.trim();
+// Modal & Spider Controls
+function openSettingsModal() {
+  document.getElementById("settings-modal").classList.remove("hidden");
+  loadIndexStats();
+}
 
-  if (!url || !url.startsWith("http")) {
-    statusEl.innerHTML = '<span style="color:red;">Please enter a valid HTTP/HTTPS URL.</span>';
-    return;
-  }
+function closeSettingsModal() {
+  document.getElementById("settings-modal").classList.add("hidden");
+}
 
-  statusEl.innerHTML = '<span>Crawling & indexing into Base128 disk store...</span>';
-
+async function toggleSpider() {
   try {
-    const res = await fetch("/api/index/crawl_url", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
+    const res = await fetch("/api/spider/toggle", { method: "POST" });
     const data = await res.json();
-    if (data.status === "success") {
-      statusEl.innerHTML = `<span style="color:#34a853;">Indexed successfully: ${escapeHtml(data.document.title)}</span>`;
-      input.value = "";
-      updateStatsDisplay(data.stats);
-    } else {
-      statusEl.innerHTML = `<span style="color:red;">${escapeHtml(data.message)}</span>`;
+    updateSpiderButtonLabels(data.is_running);
+    loadIndexStats();
+  } catch {}
+}
+
+async function stepSpider() {
+  try {
+    const res = await fetch("/api/spider/crawl_now", { method: "POST" });
+    const data = await res.json();
+    loadIndexStats();
+    if (currentQuery) {
+      executeSearch(currentQuery);
     }
-  } catch (err) {
-    statusEl.innerHTML = `<span style="color:red;">Error indexing site: ${err.message}</span>`;
+  } catch {}
+}
+
+function updateSpiderButtonLabels(isRunning) {
+  const label = isRunning ? "Pause Spider" : "Resume Spider";
+  const modalLabel = isRunning ? "Pause Background Spider" : "Resume Background Spider";
+  document.getElementById("toggle-spider-btn").innerText = label;
+  document.getElementById("modal-toggle-spider-btn").innerText = modalLabel;
+
+  const badge = document.getElementById("spider-status-badge");
+  const modalState = document.getElementById("modal-spider-state");
+  if (isRunning) {
+    badge.className = "badge-active";
+    badge.innerText = "Active";
+    modalState.innerText = "Running";
+  } else {
+    badge.className = "badge-paused";
+    badge.innerText = "Paused";
+    modalState.innerText = "Paused";
   }
+}
+
+function startStatusPolling() {
+  if (spiderPollInterval) clearInterval(spiderPollInterval);
+  spiderPollInterval = setInterval(loadIndexStats, 4000);
 }
 
 async function loadIndexStats() {
   try {
     const res = await fetch("/api/index/stats");
     const data = await res.json();
-    updateStatsDisplay(data.storage);
+    updateStatsDisplay(data.storage, data.spider);
   } catch {}
 }
 
-function updateStatsDisplay(stats) {
-  if (!stats) return;
-  const docsEl = document.getElementById("stat-docs");
-  const vocabEl = document.getElementById("stat-vocab");
-  const sizeEl = document.getElementById("stat-size");
-  const badgeEl = document.getElementById("disk-badge-text");
+function updateStatsDisplay(storage, spider) {
+  if (storage) {
+    const docsEl = document.getElementById("stat-docs");
+    const vocabEl = document.getElementById("stat-vocab");
+    const sizeEl = document.getElementById("stat-size");
+    const badgeEl = document.getElementById("disk-badge-text");
 
-  if (docsEl) docsEl.innerText = stats.total_documents || 0;
-  if (vocabEl) vocabEl.innerText = stats.total_vocabulary_terms || 0;
-  if (sizeEl) sizeEl.innerText = stats.base128_disk_formatted || "0 KB";
-  if (badgeEl) badgeEl.innerText = `Base128 Store: ${stats.total_documents || 0} sites (${stats.base128_disk_formatted || '0 KB'})`;
+    if (docsEl) docsEl.innerText = storage.total_documents || 0;
+    if (vocabEl) vocabEl.innerText = storage.total_vocabulary_terms || 0;
+    if (sizeEl) sizeEl.innerText = storage.base128_disk_formatted || "0 KB";
+    if (badgeEl) badgeEl.innerText = `Base128 Store: ${storage.total_documents || 0} sites (${storage.base128_disk_formatted || '0 KB'})`;
+  }
+
+  if (spider) {
+    const frontierVal = document.getElementById("spider-frontier-val");
+    const crawledVal = document.getElementById("spider-crawled-val");
+    const modalFrontier = document.getElementById("modal-frontier-size");
+    const modalVisited = document.getElementById("modal-visited-count");
+
+    if (frontierVal) frontierVal.innerText = spider.frontier_size || 0;
+    if (crawledVal) crawledVal.innerText = spider.pages_crawled_session || 0;
+    if (modalFrontier) modalFrontier.innerText = `${spider.frontier_size || 0} links`;
+    if (modalVisited) modalVisited.innerText = `${spider.visited_count || 0} URLs`;
+
+    updateSpiderButtonLabels(spider.is_running);
+  }
 }
 
 function escapeHtml(str) {
