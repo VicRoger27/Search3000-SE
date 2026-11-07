@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Search3000 - AI Search Engine</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+</head>
+<body>
+
+  <!-- Top Navigation Header -->
+  <header id="top-header" class="top-nav">
+    <div class="nav-left">
+      <div id="logo-small" class="logo small-logo hidden" onclick="goHome()">
+        <span class="logo-s">S</span><span class="logo-e">e</span><span class="logo-a">a</span><span class="logo-r">r</span><span class="logo-c">c</span><span class="logo-h">h</span><span class="logo-num">3000</span>
+      </div>
+      <div id="search-bar-container-top" class="search-bar-top hidden">
+        <div class="input-wrapper">
+          <input type="text" id="query-input-top" placeholder="Search the web or ask anything..." autocomplete="off">
+          <button id="clear-btn" class="icon-btn hidden" title="Clear">✕</button>
+          <button id="search-btn-top" class="icon-btn search-icon-btn" title="Search">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+    <div class="nav-right">
+      <div class="disk-badge" id="disk-badge-btn" title="Base128 Disk Store Information">
+        <span class="pulse-dot"></span>
+        <span id="disk-badge-text">Base128 Store: 0 sites</span>
+      </div>
+      <button class="icon-btn gear-btn" id="open-indexer-modal" title="Site Indexer & Stats">⚙️</button>
+    </div>
+  </header>
+
+  <!-- Main View Container -->
+  <main id="main-view">
+
+    <!-- HOME / HERO VIEW -->
+    <section id="home-view" class="hero-section">
+      <div class="hero-content">
+        <div class="logo main-logo">
+          <span class="logo-s">S</span><span class="logo-e">e</span><span class="logo-a">a</span><span class="logo-r">r</span><span class="logo-c">c</span><span class="logo-h">h</span><span class="logo-num">3000</span>
+        </div>
+        <p class="hero-tagline">Rivaling Google with Spark-X 2.6 SLM intent regeneration & Base128 disk indexing</p>
+
+        <div class="home-search-box">
+          <div class="search-input-group">
+            <span class="search-lens-icon">
+              <svg viewBox="0 0 24 24" width="20" height="20"><path fill="#9aa0a6" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+            </span>
+            <input type="text" id="query-input-home" placeholder="Type what's on your mind (try typos like 'quantm computng suprcondctr')..." autofocus autocomplete="off">
+            <span class="spark-badge">Spark-X 2.6</span>
+          </div>
+
+          <div class="home-actions">
+            <button id="search-btn-home" class="btn primary-btn">Search with Spark-X</button>
+            <button id="lucky-btn" class="btn secondary-btn">I'm Feeling Lucky</button>
+          </div>
+        </div>
+
+        <div class="quick-pills">
+          <span class="pill-label">Try searching:</span>
+          <button class="pill" onclick="triggerSearch('quantm computng suprcondctr')">quantm computng suprcondctr</button>
+          <button class="pill" onclick="triggerSearch('deepseck vs chatgpt artifcl intlgnce')">deepseck vs chatgpt artifcl intlgnce</button>
+          <button class="pill" onclick="triggerSearch('james webb telscop exoplant')">james webb telscop exoplant</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- RESULTS VIEW -->
+    <section id="results-view" class="results-section hidden">
+      <!-- Search Filter Tabs -->
+      <div class="search-tabs">
+        <button class="tab-btn active" data-tab="all">All</button>
+        <button class="tab-btn" data-tab="ai">✨ AI Overview</button>
+        <button class="tab-btn" data-tab="crawler">🕷️ Live Crawled</button>
+      </div>
+
+      <div class="results-container">
+        <!-- Left: Search Results Column -->
+        <div class="results-main">
+
+          <!-- SLM Reformulation Notice ("Did you mean / What you meant") -->
+          <div id="reformulation-bar" class="reformulation-card hidden">
+            <div class="reformulation-icon">⚡</div>
+            <div class="reformulation-text">
+              <span class="reformulation-label">Showing results for</span>
+              <a href="javascript:void(0)" id="corrected-query-link" class="corrected-query-link"></a>
+              <div class="search-instead">
+                <span>Search instead for:</span>
+                <a href="javascript:void(0)" id="original-query-link" class="original-query-link"></a>
+                <span id="reformulation-reason" class="reformulation-reason"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Google AI Overview Box (Spark-X 2.6 Powered) -->
+          <div id="ai-overview-card" class="ai-overview-card">
+            <div class="ai-header">
+              <div class="ai-header-left">
+                <span class="ai-sparkle">✨</span>
+                <span class="ai-title">AI Overview</span>
+                <span class="ai-model-tag">Spark-X 2.6 (RTX 5060 Ti)</span>
+              </div>
+              <div class="ai-header-right">
+                <button id="regenerate-ai-btn" class="icon-btn small-btn" title="Regenerate Overview">🔄</button>
+              </div>
+            </div>
+
+            <div id="ai-overview-sources" class="ai-sources-bar">
+              <!-- Source badges injected here -->
+            </div>
+
+            <div id="ai-overview-content" class="ai-content">
+              <div class="ai-loading">
+                <div class="shimmer-line"></div>
+                <div class="shimmer-line short"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Search Results Metrics -->
+          <div id="results-metrics" class="results-metrics">About 0 results (0.00 seconds)</div>
+
+          <!-- Web Search Results List -->
+          <div id="results-list" class="results-list">
+            <!-- Results cards injected here -->
+          </div>
+        </div>
+
+        <!-- Right: Indexer & System Sidecar -->
+        <aside class="results-sidecar">
+          <div class="sidecar-card">
+            <h3>Base128 Disk Store</h3>
+            <p class="sidecar-desc">Indexed web documents stored in 7-bit Base128 format on disk.</p>
+            <div class="stats-grid">
+              <div class="stat-item">
+                <span class="stat-val" id="stat-docs">0</span>
+                <span class="stat-label">Sites Stored</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-val" id="stat-vocab">0</span>
+                <span class="stat-label">Vocab Terms</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-val" id="stat-size">0 KB</span>
+                <span class="stat-label">Base128 Size</span>
+              </div>
+            </div>
+            <div class="folder-path" id="folder-path">data/indexed_sites_base128/</div>
+          </div>
+
+          <div class="sidecar-card">
+            <h3>Index Any Website</h3>
+            <p class="sidecar-desc">Add a URL to crawl and commit to disk in Base128 format:</p>
+            <div class="crawl-input-group">
+              <input type="url" id="crawl-url-input" placeholder="https://example.com/page">
+              <button id="crawl-url-btn" class="btn small-btn primary-btn">Index</button>
+            </div>
+            <div id="crawl-status" class="crawl-status"></div>
+          </div>
+        </aside>
+
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
