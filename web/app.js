@@ -413,5 +413,8 @@ function escapeHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+    .replace(/'/g, "&#039;")
+    .replace(/on\w+\s*=/g, "") // Remove event handlers like onclick=, onerror=
+    .replace(/javascript:/gi, "") // Remove javascript: protocol
+    .replace(/vbscript:/gi, ""); // Remove vbscript: protocol
 }

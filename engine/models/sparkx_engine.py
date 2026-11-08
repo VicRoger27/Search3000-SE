@@ -47,7 +47,7 @@ class SparkXEngine:
         """Finds the best available llama-server executable with CUDA support."""
         if Path(self.server_bin).exists():
             return self.server_bin
-        return FALLBACK_SERVER_BIN
+        return FALLBACK_SERVER_BIN or "llama-server"
 
     def terminate_existing_instance(self):
         """Kills any active llama-server process bound to this port per user rules."""
@@ -77,7 +77,7 @@ class SparkXEngine:
         exe = self.find_executable()
 
         if not Path(self.model_path).exists():
-            raise FileNotFoundError(f"Spark-X model not found at {self.model_path}")
+            raise FileNotFoundError(f"Spark-X model not found at {self.model_path}. Check MODEL_PATH environment variable.")
 
         args = [
             exe,
@@ -154,7 +154,7 @@ class SparkXEngine:
                 if res.status_code == 200:
                     text = res.json()["choices"][0]["text"].strip()
                     # Clean up punctuation
-                    cleaned = text.strip("\"'.,")
+                    cleaned = text.strip("'.,")
                     is_different = cleaned.lower() != raw_query.lower()
                     return {
                         "corrected_query": cleaned if is_different else raw_query,
@@ -162,8 +162,12 @@ class SparkXEngine:
                         "reason": f"Corrected search terms for '{raw_query}'" if is_different else "",
                         "raw_query": raw_query,
                     }
+        except httpx.HTTPError as e:
+            print(f"[SparkXEngine] HTTP error during query reformulation: {e}")
+        except json.JSONDecodeError as e:
+            print(f"[SparkXEngine] JSON decode error: {e}")
         except Exception as e:
-            print(f"[SparkXEngine] Query reformulation fallback: {e}")
+            print(f"[SparkXEngine] Query reformulation error: {e}")
 
         return {
             "corrected_query": raw_query,

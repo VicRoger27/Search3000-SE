@@ -155,17 +155,19 @@ class PureWebSpider:
         self.current_crawling_url = url
 
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=False) as client:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=True) as client:
                 res = await client.get(url, headers=self.headers)
                 content_type = res.headers.get("content-type", "").lower()
                 if res.status_code == 200 and ("text/html" in content_type or "text/plain" in content_type):
                     data = self.extract_page_data(res.text, str(res.url))
                     if len(data["text"]) > 80:
-                        # Enqueue outlinks
+                        # Enqueue outlinks using set for O(1) lookup
+                        frontier_set = set(self.frontier)
                         for link in data["outlinks"]:
                             norm_link = self._normalize_url(link)
-                            if norm_link not in self.visited and len(self.frontier) < 2000:
+                            if norm_link not in frontier_set and len(self.frontier) < 2000:
                                 self.frontier.append(link)
+                                frontier_set.add(norm_link)
 
                         # Commit document to Base128 on-disk store
                         doc_id = self.store.add_document(
@@ -178,8 +180,12 @@ class PureWebSpider:
                         self.pages_crawled_session += 1
                         self._save_state()
                         return self.store.catalog.get(doc_id)
+                else:
+                    print(f"[PureSpider] Skip {res.status_code} {res.url}")
+        except httpx.HTTPError as e:
+            print(f"[PureSpider] HTTP error on {url}: {e}")
         except Exception as e:
-            pass
+            print(f"[PureSpider] Error on {url}: {e}")
         finally:
             self.current_crawling_url = ""
 
@@ -213,7 +219,7 @@ class PureWebSpider:
             try:
                 await self.crawl_step(count=1)
             except Exception as e:
-                print(f"[PureSpider] Notice: {e}")
+                print(f"[PureSpider] Error: {e}")
             await asyncio.sleep(self.crawl_delay)
 
     def start_background(self):

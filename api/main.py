@@ -6,6 +6,7 @@ pure autonomous hyperlink web crawler, Base128 disk storage, and streaming AI Ov
 
 import asyncio
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -24,7 +25,33 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT_DIR / "web"
 DATA_DIR = ROOT_DIR / "data" / "indexed_sites_base128"
 
-app = FastAPI(title="Search3000 Search Engine API", version="2.0.0")
+# Global engines
+store = DiskIndexStore(base_dir=str(DATA_DIR))
+spider = PureWebSpider(store=store)
+sparkx = SparkXEngine()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manages application startup and shutdown lifecycle."""
+    try:
+        await sparkx.start_server(wait_timeout=25)
+    except Exception as e:
+        print(f"[API] Spark-X startup notice: {e}")
+
+    # Launch autonomous hyperlink spider in the background
+    spider.start_background()
+    print("[API] Search3000 API and background spider started successfully.")
+
+    yield
+
+    print("[API] Shutting down Search3000...")
+    spider.stop_background()
+    sparkx.stop_server()
+    print("[API] Clean shutdown complete.")
+
+
+app = FastAPI(title="Search3000 Search Engine API", version="2.0.2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,30 +60,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Global engines
-store = DiskIndexStore(base_dir=str(DATA_DIR))
-spider = PureWebSpider(store=store)
-sparkx = SparkXEngine()
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Starts Spark-X GPU engine and autonomous background spider on startup."""
-    try:
-        await sparkx.start_server(wait_timeout=25)
-    except Exception as e:
-        print(f"[API] Spark-X startup notice: {e}")
-
-    # Launch autonomous hyperlink spider in the background
-    spider.start_background()
-
-
-@app.on_event("shutdown")
-def shutdown_event():
-    """Cleans up background spider and Spark-X engine on shutdown."""
-    spider.stop_background()
-    sparkx.stop_server()
 
 
 @app.get("/api/search")
