@@ -5,8 +5,9 @@ Operates as a 100% independent web crawler following hyperlinks across the web g
 - ZERO search APIs or OpenSearch endpoints.
 - Pure hyperlink traversal: fetches seed pages, extracts <a href="..."> outlinks,
   normalizes them into an on-disk frontier, and commits parsed documents to Base128.
-- Rate Limiting & Dynamic Crawl Backoff: per-domain politeness, robots.txt compliance,
-  HTTP 429/503 exponential backoff, and adaptive latency-based throttling.
+- Rate Limiting & Dynamic Crawl Backoff: per-domain politeness, robots.txt compliance (10s timeout),
+  HTTP 429/503 exponential backoff, adaptive latency throttling, max redirect protection,
+  and HTTP 404/410 broken link detection.
 """
 
 import asyncio
@@ -24,9 +25,9 @@ import httpx
 from engine.storage.base128 import Base128Codec
 from engine.storage.disk_index import DiskIndexStore
 
-# Foundational seeds across computer vision, AI, science, technology, and portals
+# Foundational high-connectivity seeds across computer vision, AI, science, technology, and portals
 DEFAULT_SEEDS = [
-    # Computer Vision & Models (YOLO, SAM, Deep Learning)
+    # Computer Vision & Deep Learning (YOLO, SAM, Neural Networks)
     "https://en.wikipedia.org/wiki/YOLO_(object_detection)",
     "https://en.wikipedia.org/wiki/Segment_Anything",
     "https://en.wikipedia.org/wiki/Object_detection",
@@ -34,15 +35,22 @@ DEFAULT_SEEDS = [
     "https://en.wikipedia.org/wiki/Convolutional_neural_network",
     "https://en.wikipedia.org/wiki/Artificial_intelligence",
     "https://en.wikipedia.org/wiki/Deep_learning",
+    "https://en.wikipedia.org/wiki/Machine_learning",
+    "https://en.wikipedia.org/wiki/Neural_network",
+    "https://en.wikipedia.org/wiki/Transformer_(deep_learning)",
+    "https://en.wikipedia.org/wiki/Generative_adversarial_network",
     "https://en.wikipedia.org/wiki/Large_language_model",
     "https://arxiv.org/abs/2304.02643",  # Segment Anything (SAM) paper
     "https://arxiv.org/abs/1506.02640",  # You Only Look Once (YOLO) paper
 
-    # Technology, Science & Web Portals
+    # Technology, Software Engineering & Science Portals
+    "https://en.wikipedia.org/wiki/Software_engineering",
     "https://en.wikipedia.org/wiki/Quantum_computing",
     "https://en.wikipedia.org/wiki/Superconductivity",
     "https://en.wikipedia.org/wiki/James_Webb_Space_Telescope",
     "https://en.wikipedia.org/wiki/Python_(programming_language)",
+    "https://en.wikipedia.org/wiki/Portal:Technology",
+    "https://en.wikipedia.org/wiki/Portal:Science",
     "https://news.ycombinator.com/",
     "https://en.wikipedia.org/wiki/Main_Page",
 ]
@@ -57,10 +65,12 @@ class PureWebSpider:
         self.is_running: bool = False
         self.crawler_task: Optional[asyncio.Task] = None
         self.pages_crawled_session: int = 0
+        self.broken_links_count: int = 0
         self.current_crawling_url: str = ""
 
         # Rate limiting & Dynamic Crawl Backoff
         self.default_crawl_delay: float = 1.0
+        self.max_redirects: int = 10
         self.domain_last_visited: Dict[str, float] = {}
         self.domain_delays: Dict[str, float] = {}
         self.domain_backoff: Dict[str, float] = {}
@@ -132,7 +142,7 @@ class PureWebSpider:
         self.domain_last_visited[domain] = time.time()
 
     async def is_allowed_by_robots(self, url: str) -> bool:
-        """Checks if URL is permitted by the domain's robots.txt policy."""
+        """Checks if URL is permitted by the domain's robots.txt policy with 10s timeout."""
         domain = self._get_domain(url)
         if not domain:
             return True
@@ -142,7 +152,7 @@ class PureWebSpider:
             robots_url = f"{parsed.scheme}://{domain}/robots.txt"
             rp = urllib.robotparser.RobotFileParser()
             try:
-                async with httpx.AsyncClient(timeout=3.0, follow_redirects=True, verify=True) as client:
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, verify=True, max_redirects=self.max_redirects) as client:
                     resp = await client.get(robots_url, headers=self.headers)
                     if resp.status_code == 200:
                         rp.parse(resp.text.splitlines())
@@ -220,7 +230,12 @@ class PureWebSpider:
 
         req_start = time.time()
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=True) as client:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=True,
+                verify=True,
+                max_redirects=self.max_redirects
+            ) as client:
                 res = await client.get(url, headers=self.headers)
                 latency = time.time() - req_start
 
@@ -241,9 +256,14 @@ class PureWebSpider:
                     self.domain_delays[domain] = backoff_seconds
                     self.domain_backoff[domain] = min(16.0, self.domain_backoff.get(domain, 1.0) * 2.0)
                     print(f"[PureSpider] Rate-limited (HTTP {res.status_code}) on {domain}. Backing off {backoff_seconds:.1f}s.")
-                    # Re-queue for later
                     if len(self.frontier) < 2000:
                         self.frontier.append(url)
+                    return None
+
+                # HTTP 404 / 410 Broken Link Logging
+                if res.status_code in (404, 410):
+                    self.broken_links_count += 1
+                    print(f"[PureSpider] Broken link detected (HTTP {res.status_code}): {res.url}")
                     return None
 
                 content_type = res.headers.get("content-type", "").lower()
@@ -269,6 +289,8 @@ class PureWebSpider:
                         return self.store.catalog.get(doc_id)
                 else:
                     print(f"[PureSpider] Skip HTTP {res.status_code} for {res.url}")
+        except httpx.TooManyRedirects:
+            print(f"[PureSpider] Redirect loop detected (> {self.max_redirects}): {url}")
         except httpx.HTTPError as e:
             print(f"[PureSpider] HTTP error on {url}: {e}")
         except Exception as e:
@@ -308,9 +330,13 @@ class PureWebSpider:
             await asyncio.sleep(self.default_crawl_delay)
 
     def start_background(self):
-        """Starts background crawler loop if not running."""
+        """Starts background crawler loop if not running, resetting stale domain backoffs."""
         if not self.is_running or self.crawler_task is None or self.crawler_task.done():
             self.is_running = True
+            # Reset transient per-domain delay multipliers on clean restart
+            self.domain_delays.clear()
+            self.domain_backoff.clear()
+            self.domain_last_visited.clear()
             self.crawler_task = asyncio.create_task(self.run_crawler_loop())
 
     def stop_background(self):
@@ -328,7 +354,9 @@ class PureWebSpider:
             "frontier_size": len(self.frontier),
             "visited_count": len(self.visited),
             "pages_crawled_session": self.pages_crawled_session,
+            "broken_links_count": self.broken_links_count,
             "current_crawling_url": self.current_crawling_url,
             "crawl_delay_seconds": self.default_crawl_delay,
             "active_domains_tracked": len(self.domain_delays),
+            "max_redirects": self.max_redirects,
         }

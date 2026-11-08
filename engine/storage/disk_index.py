@@ -153,8 +153,11 @@ class DiskIndexStore:
         return doc_id
 
     def get_document(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves and deserializes full document payload from its Base128 disk file."""
-        doc_path = self.docs_dir / f"{doc_id}.b128"
+        """Retrieves and deserializes full document payload from its Base128 disk file with path-traversal safety."""
+        clean_id = re.sub(r"[^a-f0-9]", "", str(doc_id).lower().strip())
+        if not clean_id:
+            return None
+        doc_path = self.docs_dir / f"{clean_id}.b128"
         if not doc_path.exists():
             return None
         try:

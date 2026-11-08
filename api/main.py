@@ -5,6 +5,8 @@ pure autonomous hyperlink web crawler, Base128 disk storage, and streaming AI Ov
 """
 
 import asyncio
+import os
+import re
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -51,26 +53,33 @@ async def lifespan(app: FastAPI):
     print("[API] Clean shutdown complete.")
 
 
-app = FastAPI(title="Search3000 Search Engine API", version="2.0.2", lifespan=lifespan)
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+ALLOWED_FILTERS = {"all", "live_crawled", "ai"}
+
+app = FastAPI(title="Search3000 Search Engine API", version="2.0.3", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
 
 @app.get("/api/search")
 async def search(
-    q: str = Query(..., description="Raw user query string"),
+    q: str = Query(..., max_length=300, description="Raw user query string"),
     skip_ai: bool = Query(False, description="Whether to bypass query reformulation"),
     filter_type: str = Query("all", description="Result filter: all | live_crawled | ai"),
 ):
     """Executes search with Spark-X query reformulation and Base128 disk retrieval."""
     start_time = time.time()
-    clean_q = q.strip()
+    # Security: strip control characters, null bytes, and excess whitespace
+    clean_q = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", q).strip()[:300]
+    if filter_type not in ALLOWED_FILTERS:
+        filter_type = "all"
+
     if not clean_q:
         return {"query": "", "results": [], "total_results": 0, "stats": store.get_stats()}
 
