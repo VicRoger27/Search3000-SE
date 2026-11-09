@@ -150,7 +150,7 @@ def get_spider_status():
 
 
 @app.post("/api/spider/toggle")
-def toggle_spider():
+async def toggle_spider():
     """Pauses or resumes the autonomous background web spider."""
     if spider.is_running:
         spider.stop_background()

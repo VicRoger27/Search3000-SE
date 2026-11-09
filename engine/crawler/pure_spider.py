@@ -337,7 +337,11 @@ class PureWebSpider:
             self.domain_delays.clear()
             self.domain_backoff.clear()
             self.domain_last_visited.clear()
-            self.crawler_task = asyncio.create_task(self.run_crawler_loop())
+            try:
+                loop = asyncio.get_running_loop()
+                self.crawler_task = loop.create_task(self.run_crawler_loop())
+            except RuntimeError:
+                pass
 
     def stop_background(self):
         """Pauses the background crawler."""

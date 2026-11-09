@@ -15,12 +15,16 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
-DEFAULT_MODEL_PATH = (
+DEFAULT_MODEL_PATH = os.getenv(
+    "SPARKX_MODEL_PATH",
     r"C:\Users\Victor\.cache\huggingface\hub\models--XHToken--Spark-X2.6-1.7B-GGUF"
-    r"\snapshots\3c90a598d4e4a030703080b5f278fe098247fbef\Spark-X2.6-1.7B-Q8_0.gguf"
+    r"\snapshots\3c90a598d4e4a030703080b5f278fe098247fbef\Spark-X2.6-1.7B-Q8_0.gguf",
 )
 
-DEFAULT_SERVER_BIN = r"C:\Users\Victor\AppData\Local\hermes\tools\llamacpp-cuda-11671-win32-x64\llama-server.exe"
+DEFAULT_SERVER_BIN = os.getenv(
+    "LLAMA_SERVER_BIN",
+    r"C:\Users\Victor\AppData\Local\hermes\tools\llamacpp-cuda-11671-win32-x64\llama-server.exe",
+)
 FALLBACK_SERVER_BIN = "llama-server"
 
 
