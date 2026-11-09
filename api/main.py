@@ -26,11 +26,18 @@ from engine.storage.disk_index import DiskIndexStore
 # Paths
 ROOT_DIR = Path(__file__).resolve().parent.parent
 WEB_DIR = ROOT_DIR / "web"
-DATA_DIR = ROOT_DIR / "data" / "indexed_sites_base128"
+PRIMARY_DATA_DIR = Path(r"D:\Index\Sites")
+FALLBACK_DATA_DIR = ROOT_DIR / "data" / "indexed_sites_base128"
+
+if os.path.exists("D:\\"):
+    PRIMARY_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DATA_DIR = PRIMARY_DATA_DIR
+else:
+    DATA_DIR = FALLBACK_DATA_DIR
 
 # Global engines
 store = DiskIndexStore(base_dir=str(DATA_DIR))
-spider = PureWebSpider(store=store, concurrency=6)
+spider = PureWebSpider(store=store, concurrency=8)
 minicpm = MiniCPMEngine()
 
 
@@ -38,13 +45,13 @@ minicpm = MiniCPMEngine()
 async def lifespan(app: FastAPI):
     """Manages application startup and shutdown lifecycle."""
     try:
-        await minicpm.start_server(wait_timeout=5)
+        await minicpm.start_server(wait_timeout=25)
     except Exception as e:
         print(f"[API] MiniCPM startup notice: {e}")
 
     # Launch autonomous hyperlink spider in the background
     spider.start_background()
-    print("[API] Search3000 API and background spider started successfully.")
+    print(f"[API] Search3000 API and background spider started successfully on storage: {DATA_DIR}")
 
     yield
 
@@ -101,10 +108,9 @@ async def search(
     # 2. Query Base128 on-disk index
     local_results = store.search_bm25(effective_query, top_k=30)
 
-    # 3. If results are sparse, step the autonomous spider forward to ingest linked pages
-    if len(local_results) < 3 and spider.frontier:
-        await spider.crawl_step(count=4)
-        local_results = store.search_bm25(effective_query, top_k=30)
+    # 3. If results are sparse, trigger high-speed crawling asynchronously in the background (NON-BLOCKING)
+    if len(local_results) < 3 and spider.frontier and not spider.is_running:
+        asyncio.create_task(spider.crawl_step(count=6))
 
     # 4. Filter by tab if requested
     if filter_type == "live_crawled":

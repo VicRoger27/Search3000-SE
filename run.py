@@ -92,7 +92,14 @@ def main():
 
     terminate_prior_instances()
 
-    data_dir = ROOT_DIR / "data" / "indexed_sites_base128"
+    primary_data_dir = Path(r"D:\Index\Sites")
+    fallback_data_dir = ROOT_DIR / "data" / "indexed_sites_base128"
+    if os.path.exists("D:\\"):
+        primary_data_dir.mkdir(parents=True, exist_ok=True)
+        data_dir = primary_data_dir
+    else:
+        data_dir = fallback_data_dir
+
     store = DiskIndexStore(base_dir=str(data_dir))
     seed_foundational_index(store)
 

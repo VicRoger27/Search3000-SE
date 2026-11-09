@@ -46,7 +46,7 @@ print("\n[2] Checking for path configurability in code...")
 model_file = project_path / 'engine' / 'models' / 'minicpm_engine.py'
 with open(model_file, 'r', encoding='utf-8') as f:
     content = f.read()
-    if "OLLAMA_HOST" in content and "MINICPM_MODEL" in content:
+    if "MINICPM_MODEL_PATH" in content and "LLAMA_SERVER_BIN" in content:
         good_findings.append("[PASS] minicpm_engine.py paths are configurable via environment variables")
     else:
         warnings.append("[WARN] minicpm_engine.py should support environment variable overrides")
