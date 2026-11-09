@@ -125,7 +125,7 @@ async function executeSearch(query, skipAi = false) {
   const reformBar = document.getElementById("reformulation-bar");
   reformBar.classList.add("hidden");
 
-  metricsEl.innerText = "Searching local Base128 index and analyzing intent with Spark-X 2.6...";
+  metricsEl.innerText = "Searching local Base128 index and analyzing intent with MiniCPM 5:2B...";
   resultsList.innerHTML = `
     <div class="shimmer-line"></div>
     <div class="shimmer-line short"></div>
@@ -140,7 +140,7 @@ async function executeSearch(query, skipAi = false) {
     currentRawResults = data.results || [];
     metricsEl.innerText = `About ${data.total_results} results (${(data.time_ms / 1000).toFixed(2)} seconds)`;
 
-    // Handle Spark-X Query Reformulation ("What you meant to say")
+    // Handle MiniCPM 5:2B Query Reformulation ("What you meant to say")
     if (data.did_you_mean && !skipAi) {
       reformBar.classList.remove("hidden");
       const correctedLink = document.getElementById("corrected-query-link");
