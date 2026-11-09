@@ -3,14 +3,14 @@
 Operates as a 100% independent web crawler following hyperlinks across the web graph:
 - ZERO reliance on external search engines (no Google, no Bing, no DuckDuckGo).
 - ZERO search APIs or OpenSearch endpoints.
-- Pure hyperlink traversal: fetches seed pages, extracts <a href="..."> outlinks,
-  normalizes them into an on-disk frontier, and commits parsed documents to Base128.
-- Rate Limiting & Dynamic Crawl Backoff: per-domain politeness, robots.txt compliance (10s timeout),
-  HTTP 429/503 exponential backoff, adaptive latency throttling, max redirect protection,
-  and HTTP 404/410 broken link detection.
+- High-Speed Concurrent Traversal: uses asynchronous batching to crawl multiple URLs in parallel.
+- Strict Content & Language Filtering: rejects foreign Wikipedia language subdomains, non-content namespaces,
+  and noisy boilerplate so that only high-quality English documents are indexed.
+- Clean Snippet Extraction: extracts actual article paragraphs, stripping Wikipedia navigation cruft.
 """
 
 import asyncio
+import hashlib
 import os
 import re
 import time
@@ -25,7 +25,7 @@ import httpx
 from engine.storage.base128 import Base128Codec
 from engine.storage.disk_index import DiskIndexStore
 
-# Foundational high-connectivity seeds across computer vision, AI, science, technology, and portals
+# Foundational high-connectivity English seeds
 DEFAULT_SEEDS = [
     # Computer Vision & Deep Learning (YOLO, SAM, Neural Networks)
     "https://en.wikipedia.org/wiki/YOLO_(object_detection)",
@@ -49,15 +49,29 @@ DEFAULT_SEEDS = [
     "https://en.wikipedia.org/wiki/Superconductivity",
     "https://en.wikipedia.org/wiki/James_Webb_Space_Telescope",
     "https://en.wikipedia.org/wiki/Python_(programming_language)",
-    "https://en.wikipedia.org/wiki/Portal:Technology",
-    "https://en.wikipedia.org/wiki/Portal:Science",
+    "https://en.wikipedia.org/wiki/Search_engine",
+    "https://en.wikipedia.org/wiki/PageRank",
+    "https://en.wikipedia.org/wiki/Inverted_index",
     "https://news.ycombinator.com/",
-    "https://en.wikipedia.org/wiki/Main_Page",
 ]
+
+# Non-content Wikipedia namespaces and noisy paths to reject
+BLOCKED_PATH_SUBSTRINGS = (
+    "action=edit", "action=history", "oldid=", "printable=yes", "diff=",
+    "/special:", "/help:", "/talk:", "/user:", "/file:", "/category:",
+    "/portal:", "/template:", "/mediawiki:", "/timedtext:", "/module:",
+    "/gadget:", "/wikipedia:", "/main_page",
+)
+
+IGNORED_EXTENSIONS = (
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".pdf", ".zip", ".tar",
+    ".gz", ".mp4", ".mp3", ".svg", ".css", ".js", ".ico", ".woff",
+    ".woff2", ".ttf", ".eot", ".xml", ".json",
+)
 
 
 class PureWebSpider:
-    def __init__(self, store: DiskIndexStore):
+    def __init__(self, store: DiskIndexStore, concurrency: int = 6):
         self.store = store
         self.frontier_file = self.store.base_dir / "spider_frontier.b128"
         self.frontier: List[str] = []
@@ -67,9 +81,11 @@ class PureWebSpider:
         self.pages_crawled_session: int = 0
         self.broken_links_count: int = 0
         self.current_crawling_url: str = ""
+        self.concurrency: int = concurrency
+        self.semaphore = asyncio.Semaphore(concurrency)
 
-        # Rate limiting & Dynamic Crawl Backoff
-        self.default_crawl_delay: float = 1.0
+        # Rate limiting & Dynamic Crawl Backoff (tuned for responsiveness)
+        self.default_crawl_delay: float = 0.2
         self.max_redirects: int = 10
         self.domain_last_visited: Dict[str, float] = {}
         self.domain_delays: Dict[str, float] = {}
@@ -78,10 +94,10 @@ class PureWebSpider:
 
         self.headers = {
             "User-Agent": (
-                "Search3000Bot/2.0 (Autonomous Web Spider; +https://github.com/VicRoger27/Search3000-SE; contact@search3000.org)"
+                "Search3000Bot/2.1 (Autonomous Web Spider; +https://github.com/VicRoger27/Search3000-SE; contact@search3000.org)"
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Language": "en-US,en;q=0.9",
         }
 
         self._load_state()
@@ -98,6 +114,35 @@ class PureWebSpider:
         """Extracts normalized hostname from URL."""
         return urlparse(url).netloc.lower()
 
+    def _is_url_allowed(self, url: str) -> bool:
+        """Checks if a URL meets language and quality filters."""
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ("http", "https"):
+                return False
+
+            netloc = parsed.netloc.lower()
+            path_lower = parsed.path.lower()
+            query_lower = parsed.query.lower()
+
+            # 1. Enforce English Wikipedia only (filter out fa.wikipedia.org, ko.wikipedia.org, etc.)
+            if "wikipedia.org" in netloc:
+                if not netloc.startswith("en."):
+                    return False
+
+            # 2. Filter out non-content paths and edit/history links
+            full_check = f"{path_lower}?{query_lower}"
+            if any(sub in full_check for sub in BLOCKED_PATH_SUBSTRINGS):
+                return False
+
+            # 3. Filter file extensions
+            if any(path_lower.endswith(ext) for ext in IGNORED_EXTENSIONS):
+                return False
+
+            return True
+        except Exception:
+            return False
+
     def _load_state(self):
         """Loads visited URLs from catalog and unvisited links from frontier file."""
         for doc_id, meta in self.store.catalog.items():
@@ -108,31 +153,34 @@ class PureWebSpider:
             try:
                 data = Base128Codec.deserialize_payload(self.frontier_file.read_bytes())
                 if isinstance(data, list):
-                    self.frontier = [u for u in data if self._normalize_url(u) not in self.visited]
+                    self.frontier = [
+                        u for u in data
+                        if self._is_url_allowed(u) and self._normalize_url(u) not in self.visited
+                    ]
             except Exception as e:
                 print(f"[PureSpider] Error loading frontier: {e}")
 
-        # If frontier is empty, populate from default seeds
-        if not self.frontier:
+        # If frontier is empty or low, seed with high-value foundational English seeds
+        if len(self.frontier) < 10:
             for s in DEFAULT_SEEDS:
-                if self._normalize_url(s) not in self.visited:
+                if self._normalize_url(s) not in self.visited and s not in self.frontier:
                     self.frontier.append(s)
 
     def _save_state(self):
-        """Persists top 500 frontier URLs in Base128 format."""
+        """Persists top 1000 frontier URLs in Base128 format."""
         try:
-            payload = Base128Codec.serialize_payload(self.frontier[:500])
+            payload = Base128Codec.serialize_payload(self.frontier[:1000])
             self.frontier_file.write_bytes(payload)
         except Exception as e:
             print(f"[PureSpider] Error saving frontier: {e}")
 
     async def _enforce_domain_delay(self, domain: str):
-        """Ensures politeness: enforces per-domain rate limiting with dynamic backoff."""
+        """Ensures per-domain politeness without freezing the entire crawler."""
         now = time.time()
         last_time = self.domain_last_visited.get(domain, 0.0)
         base_delay = self.domain_delays.get(domain, self.default_crawl_delay)
         multiplier = self.domain_backoff.get(domain, 1.0)
-        target_delay = base_delay * multiplier
+        target_delay = min(5.0, base_delay * multiplier)
 
         elapsed = now - last_time
         if elapsed < target_delay:
@@ -142,7 +190,7 @@ class PureWebSpider:
         self.domain_last_visited[domain] = time.time()
 
     async def is_allowed_by_robots(self, url: str) -> bool:
-        """Checks if URL is permitted by the domain's robots.txt policy with 10s timeout."""
+        """Checks if URL is permitted by domain's robots.txt with caching."""
         domain = self._get_domain(url)
         if not domain:
             return True
@@ -152,7 +200,7 @@ class PureWebSpider:
             robots_url = f"{parsed.scheme}://{domain}/robots.txt"
             rp = urllib.robotparser.RobotFileParser()
             try:
-                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, verify=True, max_redirects=self.max_redirects) as client:
+                async with httpx.AsyncClient(timeout=4.0, follow_redirects=True, verify=True) as client:
                     resp = await client.get(robots_url, headers=self.headers)
                     if resp.status_code == 200:
                         rp.parse(resp.text.splitlines())
@@ -170,153 +218,196 @@ class PureWebSpider:
                 return True
         return True
 
-    @staticmethod
-    def extract_page_data(html: str, base_url: str) -> Dict[str, Any]:
-        """Parses HTML into clean readable text, title, and all outgoing <a href> links."""
+    @classmethod
+    def extract_page_data(cls, html: str, base_url: str) -> Dict[str, Any]:
+        """Parses HTML into clean article text, title, clean snippet, and quality outlinks."""
         title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
         title = title_match.group(1).strip() if title_match else ""
         title = re.sub(r"&[a-zA-Z0-9#]+;", " ", title)
+        # Clean title suffix (e.g. " - Wikipedia")
+        title = re.sub(r"\s+-\s+Wikipedia.*$", "", title, flags=re.IGNORECASE)
 
+        # 1. Extract and filter all valid outgoing links
         raw_links = re.findall(r'<a\s+(?:[^>]*?\s+)?href=["\']([^"\']+)["\']', html, re.IGNORECASE)
         valid_links = []
-        ignored_extensions = (
-            ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".tar", ".gz",
-            ".mp4", ".mp3", ".svg", ".css", ".js", ".ico", ".woff", ".woff2"
-        )
+
+        spider_instance = cls(store=None) if False else None
 
         for l in raw_links:
             try:
                 full_url = urljoin(base_url, l.strip())
                 parsed = urlparse(full_url)
                 if parsed.scheme in ("http", "https"):
+                    netloc = parsed.netloc.lower()
                     path_lower = parsed.path.lower()
-                    if not any(path_lower.endswith(ext) for ext in ignored_extensions):
-                        if not any(sub in path_lower for sub in ("/action=edit", "/special:", "/user:", "/file:")):
-                            valid_links.append(full_url)
+                    query_lower = parsed.query.lower()
+
+                    # Only English Wikipedia
+                    if "wikipedia.org" in netloc and not netloc.startswith("en."):
+                        continue
+                    # Skip noise
+                    if any(sub in f"{path_lower}?{query_lower}" for sub in BLOCKED_PATH_SUBSTRINGS):
+                        continue
+                    if any(path_lower.endswith(ext) for ext in IGNORED_EXTENSIONS):
+                        continue
+
+                    url_clean, _ = urldefrag(full_url)
+                    valid_links.append(url_clean)
             except Exception:
                 pass
 
+        # 2. Extract clean body text and extract paragraph summaries
         cleaned = re.sub(
-            r"<(script|style|noscript|svg|nav|footer|header|aside)[^>]*>.*?</\1>",
+            r"<(script|style|noscript|svg|nav|footer|header|aside|figure)[^>]*>.*?</\1>",
             " ",
             html,
             flags=re.IGNORECASE | re.DOTALL,
         )
+
+        # Extract main paragraph content
+        paragraphs = re.findall(r"<p[^>]*>(.*?)</p>", cleaned, flags=re.IGNORECASE | re.DOTALL)
+        clean_paras = []
+        for p in paragraphs:
+            p_text = re.sub(r"<[^>]+>", " ", p)
+            p_text = re.sub(r"\[\d+\]|\[edit\]|\[citation needed\]", "", p_text)
+            p_text = re.sub(r"&nbsp;|&amp;|&quot;|&#\d+;", " ", p_text)
+            p_text = re.sub(r"\s+", " ", p_text).strip()
+            # Ignore Wikipedia disclaimers / empty / disambiguation lines
+            if len(p_text) > 40 and not p_text.startswith("Jump to") and not "Redirected from" in p_text:
+                clean_paras.append(p_text)
+
+        snippet = " ".join(clean_paras[:2])[:280]
+        if snippet and not snippet.endswith("."):
+            snippet += "..."
+
+        # Full body text for indexing
         text = re.sub(r"<[^>]+>", " ", cleaned)
         text = re.sub(r"&nbsp;", " ", text)
         text = re.sub(r"&[a-zA-Z0-9#]+;", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
 
+        # Remove common Wikipedia header junk from full text
+        text = re.sub(r"Jump to (content|navigation|search)", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"From Wikipedia, the free encyclopedia", "", text, flags=re.IGNORECASE)
+
         return {
             "title": title or "Web Document",
             "text": text,
-            "outlinks": list(dict.fromkeys(valid_links))[:50],
+            "snippet": snippet or (text[:240] + "..."),
+            "outlinks": list(dict.fromkeys(valid_links))[:80],
         }
 
-    async def fetch_and_index(self, url: str, timeout: float = 6.0) -> Optional[Dict[str, Any]]:
-        """Politely fetches a URL directly, indexes into Base128, and enqueues outlinks."""
+    async def fetch_and_index(self, url: str, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
+        """Politely fetches a URL, indexes into Base128, and enqueues high-value outlinks."""
         norm_url = self._normalize_url(url)
         self.visited.add(norm_url)
         self.current_crawling_url = url
         domain = self._get_domain(url)
 
+        if not self._is_url_allowed(url):
+            return None
+
         # 1. Robots.txt Compliance Check
         if not await self.is_allowed_by_robots(url):
-            print(f"[PureSpider] Disallowed by robots.txt: {url}")
             return None
 
         # 2. Dynamic Domain Rate Limiting Delay
         await self._enforce_domain_delay(domain)
 
-        req_start = time.time()
-        try:
-            async with httpx.AsyncClient(
-                timeout=timeout,
-                follow_redirects=True,
-                verify=True,
-                max_redirects=self.max_redirects
-            ) as client:
-                res = await client.get(url, headers=self.headers)
-                latency = time.time() - req_start
+        async with self.semaphore:
+            req_start = time.time()
+            try:
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    verify=True,
+                    max_redirects=self.max_redirects
+                ) as client:
+                    res = await client.get(url, headers=self.headers)
+                    latency = time.time() - req_start
 
-                # Adaptive delay: if server is slow, increase delay slightly; if fast, recover backoff
-                if latency > 2.5:
-                    self.domain_delays[domain] = min(10.0, self.domain_delays.get(domain, 1.0) + 0.5)
-                elif latency < 0.8:
-                    self.domain_backoff[domain] = max(1.0, self.domain_backoff.get(domain, 1.0) * 0.9)
+                    if res.status_code in (404, 410):
+                        self.broken_links_count += 1
+                        return None
 
-                # HTTP 429 Too Many Requests / 503 Service Unavailable -> Back off exponentially!
-                if res.status_code in (429, 503):
-                    retry_after = res.headers.get("retry-after")
-                    if retry_after and retry_after.isdigit():
-                        backoff_seconds = float(retry_after)
-                    else:
-                        backoff_seconds = min(60.0, self.domain_delays.get(domain, 1.0) * 2.5)
+                    if res.status_code in (429, 503):
+                        self.domain_delays[domain] = 2.0
+                        return None
 
-                    self.domain_delays[domain] = backoff_seconds
-                    self.domain_backoff[domain] = min(16.0, self.domain_backoff.get(domain, 1.0) * 2.0)
-                    print(f"[PureSpider] Rate-limited (HTTP {res.status_code}) on {domain}. Backing off {backoff_seconds:.1f}s.")
-                    if len(self.frontier) < 2000:
-                        self.frontier.append(url)
-                    return None
+                    if res.status_code != 200:
+                        return None
 
-                # HTTP 404 / 410 Broken Link Logging
-                if res.status_code in (404, 410):
-                    self.broken_links_count += 1
-                    print(f"[PureSpider] Broken link detected (HTTP {res.status_code}): {res.url}")
-                    return None
+                    content_type = res.headers.get("content-type", "").lower()
+                    if "text/html" not in content_type and "application/xhtml" not in content_type:
+                        return None
 
-                content_type = res.headers.get("content-type", "").lower()
-                if res.status_code == 200 and ("text/html" in content_type or "text/plain" in content_type):
-                    data = self.extract_page_data(res.text, str(res.url))
-                    if len(data["text"]) > 80:
-                        frontier_set = set(self.frontier)
-                        for link in data["outlinks"]:
-                            norm_link = self._normalize_url(link)
-                            if norm_link not in frontier_set and norm_link not in self.visited and len(self.frontier) < 2000:
-                                self.frontier.append(link)
-                                frontier_set.add(norm_link)
+                    html = res.text
+                    data = self.extract_page_data(html, str(res.url))
 
-                        doc_id = self.store.add_document(
-                            url=str(res.url),
-                            title=data["title"],
-                            content=data["text"][:16000],
-                            snippet=data["text"][:260] + "...",
-                            source="autonomous_spider",
-                        )
-                        self.pages_crawled_session += 1
-                        self._save_state()
-                        return self.store.catalog.get(doc_id)
-                else:
-                    print(f"[PureSpider] Skip HTTP {res.status_code} for {res.url}")
-        except httpx.TooManyRedirects:
-            print(f"[PureSpider] Redirect loop detected (> {self.max_redirects}): {url}")
-        except httpx.HTTPError as e:
-            print(f"[PureSpider] HTTP error on {url}: {e}")
-        except Exception as e:
-            print(f"[PureSpider] Error on {url}: {e}")
-        finally:
-            self.current_crawling_url = ""
+                    # Index into Base128 disk store
+                    doc_id = self.store.add_document(
+                        url=str(res.url),
+                        title=data["title"],
+                        content=data["text"],
+                        snippet=data["snippet"],
+                        source="autonomous_spider",
+                    )
+                    self.store.save_index()
+                    self.pages_crawled_session += 1
+
+                    # Add new outlinks to frontier
+                    frontier_set = set(self.frontier)
+                    added = 0
+                    for link in data["outlinks"]:
+                        norm_link = self._normalize_url(link)
+                        if (
+                            self._is_url_allowed(link)
+                            and norm_link not in self.visited
+                            and link not in frontier_set
+                        ):
+                            self.frontier.append(link)
+                            frontier_set.add(link)
+                            added += 1
+                            if len(self.frontier) >= 3000:
+                                break
+
+                    print(f"[PureSpider] Indexed [{data['title']}] ({str(res.url)}) +{added} links (Frontier: {len(self.frontier)})")
+                    return {
+                        "doc_id": doc_id,
+                        "url": str(res.url),
+                        "title": data["title"],
+                        "snippet": data["snippet"],
+                    }
+
+            except Exception:
+                pass
+            finally:
+                self.current_crawling_url = ""
 
         return None
 
-    async def crawl_step(self, count: int = 1) -> List[Dict[str, Any]]:
-        """Pops unvisited URLs from frontier and crawls them."""
-        indexed = []
-        while self.frontier and len(indexed) < count:
+    async def crawl_step(self, count: int = 5) -> List[Dict[str, Any]]:
+        """Pops a batch of unvisited URLs from frontier and crawls them concurrently."""
+        batch_urls = []
+        while self.frontier and len(batch_urls) < count:
             url = self.frontier.pop(0)
             norm = self._normalize_url(url)
-            if norm in self.visited:
+            if norm in self.visited or not self._is_url_allowed(url):
                 continue
-            doc = await self.fetch_and_index(url)
-            if doc:
-                indexed.append(doc)
+            batch_urls.append(url)
+
+        if not batch_urls:
+            return []
+
+        tasks = [self.fetch_and_index(u) for u in batch_urls]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        indexed = [r for r in results if isinstance(r, dict) and r is not None]
         return indexed
 
     async def run_crawler_loop(self):
-        """Continuous background crawl loop following hyperlinks with dynamic delays."""
+        """Continuous background crawl loop processing concurrent batches."""
         self.is_running = True
-        print(f"[PureSpider] Autonomous hyperlink crawler started. Initial frontier: {len(self.frontier)} links.")
+        print(f"[PureSpider] High-speed autonomous crawler started. Initial frontier: {len(self.frontier)} links.")
         while self.is_running:
             if not self.frontier:
                 for s in DEFAULT_SEEDS:
@@ -324,19 +415,17 @@ class PureWebSpider:
                         self.frontier.append(s)
 
             try:
-                await self.crawl_step(count=1)
+                # Crawl 4 URLs concurrently in each step
+                await self.crawl_step(count=4)
             except Exception as e:
-                print(f"[PureSpider] Error: {e}")
+                print(f"[PureSpider] Loop exception: {e}")
+
             await asyncio.sleep(self.default_crawl_delay)
 
     def start_background(self):
-        """Starts background crawler loop if not running, resetting stale domain backoffs."""
+        """Starts background crawler loop if not running."""
         if not self.is_running or self.crawler_task is None or self.crawler_task.done():
             self.is_running = True
-            # Reset transient per-domain delay multipliers on clean restart
-            self.domain_delays.clear()
-            self.domain_backoff.clear()
-            self.domain_last_visited.clear()
             try:
                 loop = asyncio.get_running_loop()
                 self.crawler_task = loop.create_task(self.run_crawler_loop())
@@ -362,5 +451,5 @@ class PureWebSpider:
             "current_crawling_url": self.current_crawling_url,
             "crawl_delay_seconds": self.default_crawl_delay,
             "active_domains_tracked": len(self.domain_delays),
-            "max_redirects": self.max_redirects,
+            "concurrency": self.concurrency,
         }

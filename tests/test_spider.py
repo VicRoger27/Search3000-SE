@@ -36,6 +36,23 @@ class TestPureSpider(unittest.TestCase):
         # Image should be filtered out
         self.assertFalse(any(l.endswith(".png") for l in extracted["outlinks"]))
 
+    def test_url_quality_and_language_filters(self):
+        # Non-English Wikipedia should be rejected
+        self.assertFalse(self.spider._is_url_allowed("https://fa.wikipedia.org/wiki/Object_detection"))
+        self.assertFalse(self.spider._is_url_allowed("https://ko.wikipedia.org/wiki/YOLO"))
+
+        # English Wikipedia should be allowed
+        self.assertTrue(self.spider._is_url_allowed("https://en.wikipedia.org/wiki/YOLO_(object_detection)"))
+
+        # Wikipedia edit / history / special namespaces should be rejected
+        self.assertFalse(self.spider._is_url_allowed("https://en.wikipedia.org/w/index.php?title=YOLO&action=edit"))
+        self.assertFalse(self.spider._is_url_allowed("https://en.wikipedia.org/wiki/Special:Search"))
+        self.assertFalse(self.spider._is_url_allowed("https://en.wikipedia.org/wiki/Help:Contents"))
+
+        # Static file extensions should be rejected
+        self.assertFalse(self.spider._is_url_allowed("https://example.org/download.zip"))
+        self.assertFalse(self.spider._is_url_allowed("https://example.org/photo.jpg"))
+
 
 if __name__ == "__main__":
     unittest.main()

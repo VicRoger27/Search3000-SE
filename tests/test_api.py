@@ -26,7 +26,7 @@ class TestAPIEndpoints(unittest.TestCase):
         self.assertIn("storage", data)
         self.assertIn("spider", data)
         self.assertIn("model", data)
-        self.assertEqual(data["model"]["name"], "Spark-X 2.6 1.7B Q8_0")
+        self.assertEqual(data["model"]["name"], "MiniCPM 5:2B")
 
     def test_get_spider_status(self):
         """Test /api/spider/status returns real-time crawler metrics."""
@@ -93,6 +93,27 @@ class TestAPIEndpoints(unittest.TestCase):
         long_q = "a" * 301
         response = self.client.get("/api/search", params={"q": long_q, "skip_ai": True})
         self.assertEqual(response.status_code, 422)
+
+    def test_page_reader_and_view_endpoints(self):
+        """Test /page/{doc_id} and /api/page/view/{doc_id} render cached Base128 pages."""
+        # Index a sample document to test reader view
+        test_doc_id = store.add_document(
+            url="https://en.wikipedia.org/wiki/Unit_Test_Sample",
+            title="Unit Test Sample Page",
+            content="This is sample content for testing the in-engine reader view.",
+            source="unit_test",
+        )
+        # Test JSON endpoint
+        res_json = self.client.get(f"/api/page/view/{test_doc_id}")
+        self.assertEqual(res_json.status_code, 200)
+        self.assertEqual(res_json.json()["doc"]["title"], "Unit Test Sample Page")
+
+        # Test HTML reader endpoint
+        res_html = self.client.get(f"/page/{test_doc_id}")
+        self.assertEqual(res_html.status_code, 200)
+        self.assertIn("text/html", res_html.headers.get("content-type", ""))
+        self.assertIn("Unit Test Sample Page", res_html.text)
+        self.assertIn("Base128 Reader", res_html.text)
 
     def test_ai_stream_endpoint(self):
         """Test /api/ai/stream streams SSE chunks terminating in [DONE]."""

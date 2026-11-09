@@ -1,6 +1,6 @@
 """Search3000 Main Application Launcher.
 
-Starts the Spark-X 2.6 GPU engine on RTX 5060 Ti, mounts the Base128 disk store,
+Starts MiniCPM 5:2B GPU inference on RTX 5060 Ti via Ollama, mounts the Base128 disk store,
 launches the FastAPI web server, and opens the Google-rivaling search interface in your browser.
 """
 
@@ -87,7 +87,7 @@ def seed_foundational_index(store: DiskIndexStore):
 def main():
     print("=" * 65)
     print("           ⚡ SEARCH3000: AI SEARCH ENGINE ⚡")
-    print("     Rivaling Google with Spark-X 2.6 & Base128 Disk Store")
+    print("     Rivaling Google with MiniCPM 5:2B & Base128 Disk Store")
     print("=" * 65)
 
     terminate_prior_instances()

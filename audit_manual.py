@@ -43,13 +43,13 @@ else:
 
 # 2. Check for hardcoded paths and env overrides
 print("\n[2] Checking for path configurability in code...")
-sparkx_file = project_path / 'engine' / 'models' / 'sparkx_engine.py'
-with open(sparkx_file, 'r', encoding='utf-8') as f:
+model_file = project_path / 'engine' / 'models' / 'minicpm_engine.py'
+with open(model_file, 'r', encoding='utf-8') as f:
     content = f.read()
-    if "SPARKX_MODEL_PATH" in content and "LLAMA_SERVER_BIN" in content:
-        good_findings.append("[PASS] sparkx_engine.py paths are configurable via environment variables")
+    if "OLLAMA_HOST" in content and "MINICPM_MODEL" in content:
+        good_findings.append("[PASS] minicpm_engine.py paths are configurable via environment variables")
     else:
-        warnings.append("[WARN] sparkx_engine.py paths should support environment variable overrides")
+        warnings.append("[WARN] minicpm_engine.py should support environment variable overrides")
 
 # Check base128.py
 base128_file = project_path / 'engine' / 'storage' / 'base128.py'
@@ -66,7 +66,7 @@ error_handling = {
 }
 
 for module, rel_path in [('pure_spider', 'engine/crawler/pure_spider.py'),
-                         ('sparkx_engine', 'engine/models/sparkx_engine.py'),
+                         ('minicpm_engine', 'engine/models/minicpm_engine.py'),
                          ('disk_index', 'engine/storage/disk_index.py')]:
     filepath = project_path / rel_path
     with open(filepath, 'r', encoding='utf-8') as f:

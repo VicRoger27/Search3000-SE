@@ -216,33 +216,51 @@ function renderResults(results) {
 
   container.innerHTML = results.map((item) => {
     let domain = "web";
+    let path = "";
     try {
-      domain = new URL(item.url).hostname;
+      const u = new URL(item.url);
+      domain = u.hostname;
+      path = u.pathname.replace(/^\//, "").replace(/\/$/, "").replace(/\//g, " › ");
     } catch {}
 
-    const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
+    const breadcrumb = path ? `${domain} › ${path}` : domain;
+    const badgeHtml = getDomainBadge(domain);
+    const docId = item.doc_id || "";
 
     return `
       <article class="result-card">
         <div class="result-header">
-          <img src="${faviconUrl}" alt="" class="result-favicon" onerror="this.style.display='none'">
+          ${badgeHtml}
           <div class="result-site-info">
             <span class="result-domain">${escapeHtml(domain)}</span>
-            <span class="result-url">${escapeHtml(item.url)}</span>
+            <span class="result-breadcrumb">${escapeHtml(breadcrumb)}</span>
           </div>
         </div>
-        <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="result-title">
+        <a href="/page/${escapeHtml(docId)}" class="result-title">
           ${escapeHtml(item.title || item.url)}
         </a>
-        <div class="result-snippet">${item.snippet || "No preview snippet available."}</div>
-        <div class="result-meta">
-          <span class="base128-tag">⚡ Base128 Indexed</span>
+        <div class="result-snippet">${escapeHtml(item.snippet || "No preview snippet available.")}</div>
+        <div class="result-actions-bar">
+          <a href="/page/${escapeHtml(docId)}" class="action-pill reader-pill">⚡ Read In-Engine</a>
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener" class="action-pill visit-pill">🌐 Original Link</a>
+          <span class="base128-tag">⚡ Base128</span>
           ${item.score ? `<span class="base128-tag">BM25: ${item.score}</span>` : ""}
           <span class="base128-tag">Source: ${escapeHtml(item.source || 'spider')}</span>
         </div>
       </article>
     `;
   }).join("");
+}
+
+function getDomainBadge(domain) {
+  const clean = domain.replace(/^www\./, "");
+  const letter = (clean[0] || "W").toUpperCase();
+  let hash = 0;
+  for (let i = 0; i < clean.length; i++) {
+    hash = clean.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const hue = Math.abs(hash % 360);
+  return `<div class="result-favicon-badge" style="background: hsl(${hue}, 60%, 25%); color: hsl(${hue}, 85%, 85%); border-color: hsl(${hue}, 60%, 40%);">${letter}</div>`;
 }
 
 function startAiOverview(query, sources) {
@@ -254,7 +272,7 @@ function startAiOverview(query, sources) {
       let domain = "source";
       try { domain = new URL(s.url).hostname.replace("www.", ""); } catch {}
       return `
-        <a href="${escapeHtml(s.url)}" target="_blank" rel="noopener" class="source-pill" title="${escapeHtml(s.title)}">
+        <a href="/page/${escapeHtml(s.doc_id || '')}" class="source-pill" title="${escapeHtml(s.title)}">
           <span>[${idx + 1}]</span>
           <span>${escapeHtml(domain)}</span>
         </a>
@@ -290,7 +308,14 @@ function startAiOverview(query, sources) {
               const text = line.substring(6);
               if (text === "[DONE]") return;
               accumulatedText += text;
-              aiContent.innerHTML = formatMarkdown(accumulatedText);
+              // Clean any leaked <think> tags on the fly
+              const cleanText = accumulatedText
+                .replace(/<think>[\s\S]*?<\/think>/g, "")
+                .replace(/<think>[\s\S]*/g, "")
+                .trim();
+              if (cleanText) {
+                aiContent.innerHTML = formatMarkdown(cleanText);
+              }
             }
           }
           read();
